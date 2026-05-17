@@ -55,6 +55,9 @@ export default function AdminDashboard() {
   }, []);
 
   useEffect(() => {
+    // Silent cleanup: delete paid orders older than 1 day
+    fetch("/api/cleanup", { method: "POST" }).catch(() => {});
+
     fetch("/api/auth/me").then(r => r.json()).then(d => {
       if (d.id) {
         setRestaurantId(d.id);
