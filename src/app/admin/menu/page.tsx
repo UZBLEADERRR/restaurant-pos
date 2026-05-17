@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Category, MenuItem } from "@/lib/supabase";
 
 export default function MenuPage() {
@@ -14,6 +14,8 @@ export default function MenuPage() {
     image_url: "", category_id: "", staff_type: "kitchen" as "kitchen" | "hall", sort_order: "0",
   });
   const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { loadAll(); }, []);
 
@@ -35,6 +37,28 @@ export default function MenuPage() {
     setEditItem(item);
     setForm({ name_ko: item.name_ko, name_en: item.name_en, price: String(item.price), description_ko: item.description_ko || "", description_en: item.description_en || "", image_url: item.image_url || "", category_id: item.category_id || "", staff_type: item.staff_type, sort_order: String(item.sort_order || 0) });
     setShowAddItem(true);
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const data = await res.json();
+      if (data.url) {
+        setForm(prev => ({ ...prev, image_url: data.url }));
+      } else {
+        alert("업로드 실패: " + (data.error || "알 수 없는 오류"));
+      }
+    } catch {
+      alert("업로드 중 오류가 발생했습니다");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
   };
 
   const submitItem = async (e: React.FormEvent) => {
@@ -147,8 +171,58 @@ export default function MenuPage() {
             </div>
             <input value={form.description_ko} onChange={(e) => setForm({ ...form, description_ko: e.target.value })} placeholder="설명 (한국어)"
               className="w-full border border-gray-200 dark:border-gray-700 dark:bg-gray-800 dark:text-white rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-kakao-yellow" />
-            <input value={form.image_url} onChange={(e) => setForm({ ...form, image_url: e.target.value })} placeholder="이미지 URL" type="url"
-              className="w-full border border-gray-200 dark:border-gray-700 dark:bg-gray-800 dark:text-white rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-kakao-yellow" />
+
+            {/* Image upload section */}
+            <div>
+              <label className="text-xs text-gray-500 mb-2 block">메뉴 이미지</label>
+              <div className="flex gap-2 items-start">
+                <div className="flex-1">
+                  {form.image_url ? (
+                    <div className="relative rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={form.image_url} alt="preview" className="w-full h-32 object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setForm(prev => ({ ...prev, image_url: "" }))}
+                        className="absolute top-2 right-2 w-6 h-6 bg-black/50 text-white rounded-full text-xs flex items-center justify-center hover:bg-black/70"
+                      >×</button>
+                    </div>
+                  ) : (
+                    <div
+                      onClick={() => fileRef.current?.click()}
+                      className="border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl h-24 flex flex-col items-center justify-center cursor-pointer hover:border-kakao-yellow transition-colors"
+                    >
+                      {uploading ? (
+                        <span className="text-xs text-gray-400 animate-pulse">업로드 중...</span>
+                      ) : (
+                        <>
+                          <span className="text-2xl mb-1">📷</span>
+                          <span className="text-xs text-gray-400">클릭하여 이미지 업로드</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleImageUpload}
+                  />
+                </div>
+                {form.image_url && (
+                  <button
+                    type="button"
+                    onClick={() => fileRef.current?.click()}
+                    disabled={uploading}
+                    className="flex-shrink-0 px-3 py-2 text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded-xl disabled:opacity-50"
+                  >
+                    {uploading ? "업로드 중..." : "변경"}
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="flex gap-2">
               <button type="button" onClick={resetForm} className="flex-1 py-2 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-500">취소</button>
               <button type="submit" className="flex-1 py-2 bg-kakao-yellow text-kakao-brown font-bold rounded-xl text-sm">{editItem ? "수정" : "추가"}</button>
@@ -160,31 +234,38 @@ export default function MenuPage() {
         {loading ? <p className="text-center text-gray-400 py-8">로딩 중...</p> : (
           <div className="space-y-2">
             {filtered.map((item) => (
-              <div key={item.id} className={`bg-white dark:bg-gray-900 rounded-2xl p-4 shadow-sm flex items-center gap-3 ${!item.is_available ? "opacity-50" : ""}`}>
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl flex-shrink-0 ${item.is_sold_out ? "bg-red-100 dark:bg-red-900/40" : item.staff_type === "kitchen" ? "bg-yellow-50 dark:bg-yellow-900/20" : "bg-blue-50 dark:bg-blue-900/20"}`}>
-                  {item.is_sold_out ? "🚫" : item.staff_type === "kitchen" ? "🍳" : "🍺"}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="font-semibold text-gray-800 dark:text-white text-sm">{item.name_ko}</p>
-                    {item.is_sold_out && (
-                      <span className="text-xs bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 px-2 py-0.5 rounded-full">품절</span>
-                    )}
-                    {!item.is_available && (
-                      <span className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-500 px-2 py-0.5 rounded-full">숨김</span>
-                    )}
+              <div key={item.id} className={`bg-white dark:bg-gray-900 rounded-2xl shadow-sm overflow-hidden ${!item.is_available ? "opacity-50" : ""}`}>
+                {item.image_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={item.image_url} alt={item.name_ko} className="w-full h-32 object-cover" />
+                )}
+                <div className="flex items-center gap-3 p-4">
+                  {!item.image_url && (
+                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl flex-shrink-0 ${item.is_sold_out ? "bg-red-100 dark:bg-red-900/40" : item.staff_type === "kitchen" ? "bg-yellow-50 dark:bg-yellow-900/20" : "bg-blue-50 dark:bg-blue-900/20"}`}>
+                      {item.is_sold_out ? "🚫" : item.staff_type === "kitchen" ? "🍳" : "🍺"}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-semibold text-gray-800 dark:text-white text-sm">{item.name_ko}</p>
+                      {item.is_sold_out && (
+                        <span className="text-xs bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 px-2 py-0.5 rounded-full">품절</span>
+                      )}
+                      {!item.is_available && (
+                        <span className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-500 px-2 py-0.5 rounded-full">숨김</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-400">{item.name_en}</p>
+                    <p className="text-sm font-bold text-kakao-brown mt-0.5">₩{item.price.toLocaleString()}</p>
                   </div>
-                  <p className="text-xs text-gray-400">{item.name_en}</p>
-                  <p className="text-sm font-bold text-kakao-brown mt-0.5">₩{item.price.toLocaleString()}</p>
-                </div>
-                <div className="flex flex-col gap-1.5 flex-shrink-0">
-                  {/* Sold out toggle */}
-                  <button onClick={() => toggleSoldOut(item)}
-                    className={`text-xs px-2.5 py-1.5 rounded-lg font-medium ${item.is_sold_out ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400" : "bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400"}`}>
-                    {item.is_sold_out ? "재개" : "품절"}
-                  </button>
-                  <button onClick={() => openEdit(item)} className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 px-2.5 py-1.5 rounded-lg">수정</button>
-                  <button onClick={() => deleteItem(item.id)} className="text-xs text-red-400 px-2.5 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20">삭제</button>
+                  <div className="flex flex-col gap-1.5 flex-shrink-0">
+                    <button onClick={() => toggleSoldOut(item)}
+                      className={`text-xs px-2.5 py-1.5 rounded-lg font-medium ${item.is_sold_out ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400" : "bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400"}`}>
+                      {item.is_sold_out ? "재개" : "품절"}
+                    </button>
+                    <button onClick={() => openEdit(item)} className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 px-2.5 py-1.5 rounded-lg">수정</button>
+                    <button onClick={() => deleteItem(item.id)} className="text-xs text-red-400 px-2.5 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20">삭제</button>
+                  </div>
                 </div>
               </div>
             ))}

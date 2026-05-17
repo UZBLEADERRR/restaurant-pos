@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { supabase, OrderItem, CustomerRequest, Table, MenuItem, Category } from "@/lib/supabase";
 
 type ActiveOrder = {
   id: string;
   table_id: string;
   total_amount: number;
+  guest_count?: number;
   created_at: string;
   status: string;
   order_items: OrderItem[];
@@ -26,7 +27,7 @@ export default function AdminDashboard() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<(MenuItem & { is_sold_out?: boolean })[]>([]);
   const [selectedCat, setSelectedCat] = useState("all");
-  const [addingItem, setAddingItem] = useState<string | null>(null); // item id being added
+  const [addingItem, setAddingItem] = useState<string | null>(null);
 
   const fetchAll = useCallback(async (rid: string) => {
     const [tablesRes, ordersRes, requestsRes] = await Promise.all([
@@ -44,7 +45,6 @@ export default function AdminDashboard() {
         activeOrder: ordersData.find((o: ActiveOrder) => o.table_id === t.id),
       }));
       setTables(merged);
-      // Keep selected in sync
       setSelected(prev => prev
         ? merged.find(t => t.id === prev.id) || null
         : null
@@ -59,7 +59,6 @@ export default function AdminDashboard() {
       if (d.id) {
         setRestaurantId(d.id);
         fetchAll(d.id);
-        // Load menu
         Promise.all([
           fetch(`/api/categories?restaurant_id=${d.id}`).then(r => r.json()),
           fetch(`/api/menu?all=1&restaurant_id=${d.id}`).then(r => r.json()),
@@ -114,7 +113,6 @@ export default function AdminDashboard() {
 
   const addMenuToTable = async (table: TableWithOrder, item: MenuItem) => {
     setAddingItem(item.id);
-    // If no active order, create one first
     if (!table.activeOrder) {
       await fetch("/api/orders", {
         method: "POST",
@@ -136,8 +134,6 @@ export default function AdminDashboard() {
     }
     setAddingItem(null);
     await fetchAll(restaurantId);
-    // Re-select to show updated order
-    setSelected(prev => prev?.id === table.id ? prev : prev);
   };
 
   // Kitchen + Hall queues from all tables
@@ -235,7 +231,10 @@ export default function AdminDashboard() {
                           <p className={`text-sm font-bold ${hasOrder ? "text-gray-800 dark:text-white" : "text-gray-500 dark:text-gray-400"}`}>
                             {table.name}
                           </p>
-                          <p className="text-xs text-gray-400">👤 {table.capacity}</p>
+                          <p className="text-xs text-gray-400">
+                            👤 {hasOrder && order!.guest_count ? order!.guest_count : table.capacity}명
+                            {hasOrder && order!.guest_count ? <span className="ml-1 text-kakao-brown font-bold">(방문)</span> : ""}
+                          </p>
                         </div>
                       </div>
                       {hasOrder && pending > 0 && (
@@ -261,7 +260,7 @@ export default function AdminDashboard() {
                               <span className={`flex-1 truncate ${item.is_completed ? "line-through text-gray-400" : "text-gray-700 dark:text-gray-300"}`}>
                                 {item.name_ko}
                               </span>
-                              <span className="text-gray-400">×{item.quantity}</span>
+                              <span className="text-gray-500 font-bold">×{item.quantity}</span>
                             </div>
                           ))}
                           {order!.order_items.length > 2 && (
@@ -284,18 +283,6 @@ export default function AdminDashboard() {
               })}
             </div>
           )}
-
-          {/* Mobile: selected table panel */}
-          {selected && (
-            <div className="mt-3 sm:hidden">
-              <TablePanel
-                table={selected} categories={categories} filteredMenu={filteredMenu}
-                selectedCat={selectedCat} setSelectedCat={setSelectedCat}
-                onAddMenu={addMenuToTable} addingItem={addingItem}
-                onToggle={toggleItem} onPay={markPaid} onClose={() => setSelected(null)}
-              />
-            </div>
-          )}
         </div>
 
         {/* ── MIDDLE: Kitchen queue ── */}
@@ -314,11 +301,15 @@ export default function AdminDashboard() {
                 <span className="text-xs font-black text-gray-300 dark:text-gray-600 w-4 flex-shrink-0 mt-0.5">{i + 1}</span>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-bold text-red-400 mb-0.5">{item.table_name}</p>
-                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 leading-tight">{item.name_ko}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">×{item.quantity} · {new Date(item.created_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</p>
+                  <p className="text-sm font-bold text-gray-800 dark:text-gray-100 leading-tight">{item.name_ko}</p>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="text-xs font-black text-red-500 bg-red-100 dark:bg-red-900/40 px-1.5 py-0.5 rounded">×{item.quantity}</span>
+                    <span className="text-xs font-bold text-gray-600 dark:text-gray-300">₩{(item.price * item.quantity).toLocaleString()}</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-0.5">{new Date(item.created_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</p>
                 </div>
                 <button onClick={() => toggleItem(item.order_id, item.id, false)}
-                  className="flex-shrink-0 w-8 h-8 rounded-lg bg-red-300 hover:bg-green-500 text-white flex items-center justify-center font-bold transition-colors">✓</button>
+                  className="flex-shrink-0 w-8 h-8 rounded-lg bg-red-300 hover:bg-green-500 text-white flex items-center justify-center font-bold transition-colors self-start mt-0.5">✓</button>
               </div>
             ))}
           </div>
@@ -340,11 +331,15 @@ export default function AdminDashboard() {
                 <span className="text-xs font-black text-gray-300 dark:text-gray-600 w-4 flex-shrink-0 mt-0.5">{i + 1}</span>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-bold text-blue-400 mb-0.5">{item.table_name}</p>
-                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 leading-tight">{item.name_ko}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">×{item.quantity} · {new Date(item.created_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</p>
+                  <p className="text-sm font-bold text-gray-800 dark:text-gray-100 leading-tight">{item.name_ko}</p>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="text-xs font-black text-blue-500 bg-blue-100 dark:bg-blue-900/40 px-1.5 py-0.5 rounded">×{item.quantity}</span>
+                    <span className="text-xs font-bold text-gray-600 dark:text-gray-300">₩{(item.price * item.quantity).toLocaleString()}</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-0.5">{new Date(item.created_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</p>
                 </div>
                 <button onClick={() => toggleItem(item.order_id, item.id, false)}
-                  className="flex-shrink-0 w-8 h-8 rounded-lg bg-blue-300 hover:bg-green-500 text-white flex items-center justify-center font-bold transition-colors">✓</button>
+                  className="flex-shrink-0 w-8 h-8 rounded-lg bg-blue-300 hover:bg-green-500 text-white flex items-center justify-center font-bold transition-colors self-start mt-0.5">✓</button>
               </div>
             ))}
           </div>
@@ -367,146 +362,172 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* Desktop: Table detail panel (slide in from right over hall queue) */}
+      {/* ── FULL-SCREEN TABLE DETAIL OVERLAY ── */}
       {selected && (
-        <div className="hidden sm:block fixed right-0 top-14 bottom-0 z-40 w-80 shadow-2xl border-l border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-y-auto">
-          <TablePanel
-            table={selected} categories={categories} filteredMenu={filteredMenu}
-            selectedCat={selectedCat} setSelectedCat={setSelectedCat}
-            onAddMenu={addMenuToTable} addingItem={addingItem}
-            onToggle={toggleItem} onPay={markPaid} onClose={() => setSelected(null)}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Table Detail Panel ──
-function TablePanel({
-  table, categories, filteredMenu, selectedCat, setSelectedCat,
-  onAddMenu, addingItem, onToggle, onPay, onClose,
-}: {
-  table: TableWithOrder;
-  categories: Category[];
-  filteredMenu: (MenuItem & { is_sold_out?: boolean })[];
-  selectedCat: string;
-  setSelectedCat: (v: string) => void;
-  onAddMenu: (table: TableWithOrder, item: MenuItem) => void;
-  addingItem: string | null;
-  onToggle: (orderId: string, itemId: string, current: boolean) => void;
-  onPay: (orderId: string) => void;
-  onClose: () => void;
-}) {
-  const order = table.activeOrder;
-  const kitchenItems = order?.order_items.filter(i => i.staff_type === "kitchen") || [];
-  const hallItems = order?.order_items.filter(i => i.staff_type === "hall") || [];
-
-  return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="px-4 pt-4 pb-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between flex-shrink-0 bg-kakao-yellow/10 dark:bg-yellow-900/20">
-        <div>
-          <h2 className="font-bold text-gray-800 dark:text-white text-base">{table.name}</h2>
-          <p className="text-xs text-gray-400">👤 {table.capacity}명</p>
-        </div>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto">
-        {/* Current order */}
-        {order && (order.order_items.length > 0) && (
-          <div className="px-4 pt-3 pb-2">
-            <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">현재 주문</p>
-            {kitchenItems.length > 0 && (
-              <div className="mb-2">
-                <p className="text-xs font-bold text-red-400 mb-1">🍳 주방</p>
-                {kitchenItems.map(item => (
-                  <div key={item.id} className={`flex items-center gap-2 p-2 rounded-xl mb-1 ${item.is_completed ? "bg-gray-50 dark:bg-gray-800/50" : "bg-red-50 dark:bg-red-950/30"}`}>
-                    <button onClick={() => onToggle(order.id, item.id, item.is_completed)}
-                      className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center text-xs font-bold flex-shrink-0 ${item.is_completed ? "bg-green-500 border-green-500 text-white" : "border-gray-300 dark:border-gray-600"}`}>
-                      {item.is_completed ? "✓" : ""}
-                    </button>
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-sm font-medium ${item.is_completed ? "line-through text-gray-400" : "text-gray-800 dark:text-gray-100"}`}>{item.name_ko}</p>
-                      <p className="text-xs text-gray-400">×{item.quantity} · ₩{(item.price * item.quantity).toLocaleString()}</p>
-                    </div>
-                  </div>
-                ))}
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-stretch justify-center sm:items-center sm:p-4">
+          <div className="bg-white dark:bg-gray-900 w-full h-full sm:h-auto sm:max-h-[90vh] sm:rounded-3xl sm:max-w-4xl flex flex-col overflow-hidden shadow-2xl">
+            {/* Overlay header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800 bg-kakao-yellow/10 dark:bg-yellow-900/20 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-kakao-yellow text-kakao-brown flex items-center justify-center font-black text-lg">
+                  {selected.number}
+                </div>
+                <div>
+                  <h2 className="font-black text-gray-800 dark:text-white text-lg">{selected.name}</h2>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    👤 {selected.activeOrder?.guest_count
+                      ? <span className="font-bold text-kakao-brown">{selected.activeOrder.guest_count}명 방문</span>
+                      : `최대 ${selected.capacity}명`}
+                    {selected.activeOrder && (
+                      <span className="ml-2 text-gray-400">· ₩{selected.activeOrder.total_amount.toLocaleString()}</span>
+                    )}
+                  </p>
+                </div>
               </div>
-            )}
-            {hallItems.length > 0 && (
-              <div className="mb-2">
-                <p className="text-xs font-bold text-blue-400 mb-1">🍺 홀</p>
-                {hallItems.map(item => (
-                  <div key={item.id} className={`flex items-center gap-2 p-2 rounded-xl mb-1 ${item.is_completed ? "bg-gray-50 dark:bg-gray-800/50" : "bg-blue-50 dark:bg-blue-950/30"}`}>
-                    <button onClick={() => onToggle(order.id, item.id, item.is_completed)}
-                      className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center text-xs font-bold flex-shrink-0 ${item.is_completed ? "bg-green-500 border-green-500 text-white" : "border-gray-300 dark:border-gray-600"}`}>
-                      {item.is_completed ? "✓" : ""}
-                    </button>
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-sm font-medium ${item.is_completed ? "line-through text-gray-400" : "text-gray-800 dark:text-gray-100"}`}>{item.name_ko}</p>
-                      <p className="text-xs text-gray-400">×{item.quantity} · ₩{(item.price * item.quantity).toLocaleString()}</p>
-                    </div>
-                  </div>
-                ))}
+              <div className="flex items-center gap-2">
+                {selected.activeOrder && (
+                  <button
+                    onClick={() => markPaid(selected.activeOrder!.id)}
+                    className="bg-kakao-yellow text-kakao-brown font-bold px-4 py-2 rounded-xl text-sm"
+                  >
+                    💳 결제
+                  </button>
+                )}
+                <button onClick={() => setSelected(null)} className="w-9 h-9 rounded-xl bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 flex items-center justify-center text-xl font-light transition-colors">×</button>
               </div>
-            )}
-          </div>
-        )}
-
-        {/* Divider */}
-        <div className="px-4 py-2">
-          <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide">메뉴 추가</p>
-        </div>
-
-        {/* Category tabs */}
-        <div className="flex overflow-x-auto scrollbar-hide px-4 gap-1.5 pb-2">
-          <button onClick={() => setSelectedCat("all")}
-            className={`flex-shrink-0 px-3 py-1 rounded-full text-xs font-medium ${selectedCat === "all" ? "bg-kakao-yellow text-kakao-brown" : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"}`}>
-            전체
-          </button>
-          {categories.map(cat => (
-            <button key={cat.id} onClick={() => setSelectedCat(cat.id)}
-              className={`flex-shrink-0 px-3 py-1 rounded-full text-xs font-medium ${selectedCat === cat.id ? "bg-kakao-yellow text-kakao-brown" : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"}`}>
-              {cat.name_ko}
-            </button>
-          ))}
-        </div>
-
-        {/* Menu items */}
-        <div className="px-4 pb-4 space-y-1.5">
-          {filteredMenu.length === 0 ? (
-            <p className="text-xs text-gray-400 text-center py-4">메뉴가 없습니다</p>
-          ) : filteredMenu.map(item => (
-            <div key={item.id} className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 rounded-xl px-3 py-2.5">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{item.name_ko}</p>
-                <p className="text-xs font-bold text-kakao-brown">₩{item.price.toLocaleString()}</p>
-              </div>
-              <button
-                onClick={() => onAddMenu(table, item)}
-                disabled={addingItem === item.id}
-                className="flex-shrink-0 w-8 h-8 rounded-xl bg-kakao-yellow text-kakao-brown font-bold text-lg flex items-center justify-center disabled:opacity-50 hover:bg-kakao-yellow-dark transition-colors"
-              >
-                {addingItem === item.id ? "…" : "+"}
-              </button>
             </div>
-          ))}
-        </div>
-      </div>
 
-      {/* Footer - total + pay */}
-      {order && (
-        <div className="px-4 py-3 border-t border-gray-100 dark:border-gray-800 flex-shrink-0 bg-white dark:bg-gray-900">
-          <div className="flex justify-between items-center mb-2.5">
-            <span className="text-sm text-gray-500 dark:text-gray-400">합계</span>
-            <span className="font-black text-lg text-kakao-brown">₩{order.total_amount.toLocaleString()}</span>
+            {/* Two-column body */}
+            <div className="flex-1 overflow-hidden flex">
+              {/* LEFT: Current order items */}
+              <div className="flex-1 overflow-y-auto p-4 border-r border-gray-100 dark:border-gray-800">
+                <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">현재 주문</p>
+                {!selected.activeOrder || selected.activeOrder.order_items.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-40 text-gray-300 dark:text-gray-700">
+                    <span className="text-4xl mb-2">🍽️</span>
+                    <p className="text-sm">아직 주문 없음</p>
+                    <p className="text-xs mt-1">오른쪽에서 메뉴를 추가하세요</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {/* Kitchen items */}
+                    {selected.activeOrder.order_items.filter(i => i.staff_type === "kitchen").length > 0 && (
+                      <div>
+                        <p className="text-xs font-bold text-red-400 mb-1.5">🍳 주방</p>
+                        {selected.activeOrder.order_items
+                          .filter(i => i.staff_type === "kitchen")
+                          .map(item => (
+                            <div key={item.id} className={`flex items-center gap-3 p-3 rounded-2xl mb-1.5 ${item.is_completed ? "bg-gray-50 dark:bg-gray-800/40" : "bg-red-50 dark:bg-red-950/30"}`}>
+                              <button
+                                onClick={() => toggleItem(selected.activeOrder!.id, item.id, item.is_completed)}
+                                className={`w-7 h-7 rounded-xl border-2 flex items-center justify-center text-xs font-bold flex-shrink-0 transition-colors ${item.is_completed ? "bg-green-500 border-green-500 text-white" : "border-gray-300 dark:border-gray-600 hover:border-green-400"}`}
+                              >
+                                {item.is_completed ? "✓" : ""}
+                              </button>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-sm font-semibold ${item.is_completed ? "line-through text-gray-400" : "text-gray-800 dark:text-gray-100"}`}>
+                                  {item.name_ko}
+                                </p>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <span className="text-xs font-black text-red-500 bg-red-100 dark:bg-red-900/40 px-1.5 py-0.5 rounded">×{item.quantity}</span>
+                                  <span className="text-xs font-bold text-gray-600 dark:text-gray-300">₩{(item.price * item.quantity).toLocaleString()}</span>
+                                  <span className="text-xs text-gray-400">(개당 ₩{item.price.toLocaleString()})</span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                    {/* Hall items */}
+                    {selected.activeOrder.order_items.filter(i => i.staff_type === "hall").length > 0 && (
+                      <div>
+                        <p className="text-xs font-bold text-blue-400 mb-1.5">🍺 홀</p>
+                        {selected.activeOrder.order_items
+                          .filter(i => i.staff_type === "hall")
+                          .map(item => (
+                            <div key={item.id} className={`flex items-center gap-3 p-3 rounded-2xl mb-1.5 ${item.is_completed ? "bg-gray-50 dark:bg-gray-800/40" : "bg-blue-50 dark:bg-blue-950/30"}`}>
+                              <button
+                                onClick={() => toggleItem(selected.activeOrder!.id, item.id, item.is_completed)}
+                                className={`w-7 h-7 rounded-xl border-2 flex items-center justify-center text-xs font-bold flex-shrink-0 transition-colors ${item.is_completed ? "bg-green-500 border-green-500 text-white" : "border-gray-300 dark:border-gray-600 hover:border-green-400"}`}
+                              >
+                                {item.is_completed ? "✓" : ""}
+                              </button>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-sm font-semibold ${item.is_completed ? "line-through text-gray-400" : "text-gray-800 dark:text-gray-100"}`}>
+                                  {item.name_ko}
+                                </p>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <span className="text-xs font-black text-blue-500 bg-blue-100 dark:bg-blue-900/40 px-1.5 py-0.5 rounded">×{item.quantity}</span>
+                                  <span className="text-xs font-bold text-gray-600 dark:text-gray-300">₩{(item.price * item.quantity).toLocaleString()}</span>
+                                  <span className="text-xs text-gray-400">(개당 ₩{item.price.toLocaleString()})</span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                    {/* Total row */}
+                    <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex justify-between items-center">
+                      <span className="text-sm text-gray-500 dark:text-gray-400">합계</span>
+                      <span className="font-black text-xl text-kakao-brown">₩{selected.activeOrder.total_amount.toLocaleString()}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* RIGHT: Menu browser */}
+              <div className="w-72 flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-950">
+                <div className="px-4 pt-4 pb-2 flex-shrink-0">
+                  <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">메뉴 추가</p>
+                  {/* Category tabs */}
+                  <div className="flex overflow-x-auto scrollbar-hide gap-1.5 pb-1">
+                    <button onClick={() => setSelectedCat("all")}
+                      className={`flex-shrink-0 px-3 py-1 rounded-full text-xs font-semibold transition-colors ${selectedCat === "all" ? "bg-kakao-yellow text-kakao-brown" : "bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 shadow-sm"}`}>
+                      전체
+                    </button>
+                    {categories.map(cat => (
+                      <button key={cat.id} onClick={() => setSelectedCat(cat.id)}
+                        className={`flex-shrink-0 px-3 py-1 rounded-full text-xs font-semibold transition-colors ${selectedCat === cat.id ? "bg-kakao-yellow text-kakao-brown" : "bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 shadow-sm"}`}>
+                        {cat.name_ko}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Menu items list */}
+                <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2">
+                  {filteredMenu.length === 0 ? (
+                    <p className="text-xs text-gray-400 text-center py-6">메뉴가 없습니다</p>
+                  ) : filteredMenu.map(item => (
+                    <div key={item.id} className="bg-white dark:bg-gray-900 rounded-2xl overflow-hidden shadow-sm">
+                      {item.image_url && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={item.image_url} alt={item.name_ko} className="w-full h-24 object-cover" />
+                      )}
+                      <div className="flex items-center gap-2 p-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">{item.name_ko}</p>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="text-xs font-black text-kakao-brown">₩{item.price.toLocaleString()}</span>
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${item.staff_type === "kitchen" ? "bg-red-100 dark:bg-red-900/30 text-red-500" : "bg-blue-100 dark:bg-blue-900/30 text-blue-500"}`}>
+                              {item.staff_type === "kitchen" ? "주방" : "홀"}
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => addMenuToTable(selected, item)}
+                          disabled={addingItem === item.id}
+                          className="flex-shrink-0 w-9 h-9 rounded-xl bg-kakao-yellow text-kakao-brown font-bold text-xl flex items-center justify-center disabled:opacity-50 hover:scale-110 active:scale-95 transition-transform"
+                        >
+                          {addingItem === item.id ? "…" : "+"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
-          <button onClick={() => onPay(order.id)}
-            className="w-full bg-kakao-yellow text-kakao-brown font-bold py-3 rounded-2xl text-sm">
-            💳 결제 완료
-          </button>
         </div>
       )}
     </div>
