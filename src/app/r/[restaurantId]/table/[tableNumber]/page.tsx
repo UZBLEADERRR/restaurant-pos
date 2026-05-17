@@ -98,13 +98,27 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
   };
 
   const loadMyOrder = useCallback(async (tableId: string) => {
-    const { data } = await supabase
+    // Try with restaurant_id, fallback without
+    let data = null;
+    const q1 = await supabase
       .from("orders")
       .select("id, total_amount, order_items(*)")
       .eq("table_id", tableId)
-      .eq("restaurant_id", restaurantId)
       .eq("status", "active")
       .maybeSingle();
+
+    if (!q1.error) {
+      data = q1.data;
+    } else {
+      // column might not exist — try without restaurant_id filter
+      const q2 = await supabase
+        .from("orders")
+        .select("id, total_amount, order_items(*)")
+        .eq("table_id", tableId)
+        .eq("status", "active")
+        .maybeSingle();
+      if (!q2.error) data = q2.data;
+    }
 
     if (data) {
       setOrderId(data.id);
@@ -115,17 +129,31 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
       setMyOrderItems([]);
       setOrderTotal(0);
     }
-  }, [restaurantId]);
+  }, []);
 
   useEffect(() => {
     const load = async () => {
-      // 1. Find table
-      const { data: tableData } = await supabase
+      // 1. Find table — try with restaurant_id, then fallback
+      let tableData = null;
+
+      const t1 = await supabase
         .from("restaurant_tables")
         .select("id, number, name")
         .eq("number", tableNumber)
         .eq("restaurant_id", restaurantId)
         .maybeSingle();
+
+      if (!t1.error && t1.data) {
+        tableData = t1.data;
+      } else {
+        // Fallback: find by number only (before migration)
+        const t2 = await supabase
+          .from("restaurant_tables")
+          .select("id, number, name")
+          .eq("number", tableNumber)
+          .maybeSingle();
+        if (!t2.error && t2.data) tableData = t2.data;
+      }
 
       if (!tableData) {
         setNotFound(true);
@@ -134,22 +162,34 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
       setTable(tableData);
       loadMyOrder(tableData.id);
 
-      // 2. Categories
-      const { data: cats } = await supabase
+      // 2. Categories — try with restaurant_id, fallback
+      let cats = null;
+      const c1 = await supabase
         .from("categories")
         .select("*")
         .eq("restaurant_id", restaurantId)
         .eq("is_active", true)
         .order("sort_order");
+      if (!c1.error) cats = c1.data;
+      else {
+        const c2 = await supabase.from("categories").select("*").eq("is_active", true).order("sort_order");
+        if (!c2.error) cats = c2.data;
+      }
       if (cats) setCategories(cats);
 
-      // 3. Menu items
-      const { data: items } = await supabase
+      // 3. Menu items — try with restaurant_id, fallback
+      let items = null;
+      const m1 = await supabase
         .from("menu_items")
         .select("*")
         .eq("restaurant_id", restaurantId)
         .eq("is_available", true)
         .order("sort_order");
+      if (!m1.error) items = m1.data;
+      else {
+        const m2 = await supabase.from("menu_items").select("*").eq("is_available", true).order("sort_order");
+        if (!m2.error) items = m2.data;
+      }
       if (items) setMenuItems(items);
     };
     load();

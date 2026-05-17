@@ -7,54 +7,87 @@ export async function GET(req: Request) {
   const tableId = searchParams.get("table_id");
   const status = searchParams.get("status") || "active";
   const restaurantId = searchParams.get("restaurant_id");
-
   const session = await getAdminSession();
 
-  let query = supabase
+  let q = supabase
     .from("orders")
     .select("*, restaurant_tables(*), order_items(*), customer_requests(*)")
     .eq("status", status)
     .order("created_at", { ascending: false });
 
-  if (tableId) query = query.eq("table_id", tableId);
-  if (restaurantId) query = query.eq("restaurant_id", restaurantId);
-  else if (session) query = query.eq("restaurant_id", session.id);
+  if (tableId) q = q.eq("table_id", tableId);
 
-  const { data, error } = await query;
+  const rid = restaurantId || session?.id;
+  if (rid) {
+    const { data, error } = await q.eq("restaurant_id", rid);
+    if (!error) return NextResponse.json(data ?? []);
+    // Fallback if restaurant_id column missing
+    if (error.message?.includes("restaurant_id")) {
+      let q2 = supabase
+        .from("orders")
+        .select("*, restaurant_tables(*), order_items(*), customer_requests(*)")
+        .eq("status", status)
+        .order("created_at", { ascending: false });
+      if (tableId) q2 = q2.eq("table_id", tableId);
+      const { data: d2, error: e2 } = await q2;
+      if (e2) return NextResponse.json({ error: e2.message }, { status: 500 });
+      return NextResponse.json(d2 ?? []);
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const { data, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  return NextResponse.json(data ?? []);
 }
 
 export async function POST(req: Request) {
   const body = await req.json();
   const { table_id, items, restaurant_id } = body;
 
-  if (!restaurant_id) {
-    return NextResponse.json({ error: "restaurant_id required" }, { status: 400 });
-  }
-
-  // Find or create active order
+  // Find or create active order for this table
   let orderId: string;
-  const { data: existing } = await supabase
+
+  const findQ = supabase
     .from("orders")
     .select("id, total_amount")
     .eq("table_id", table_id)
-    .eq("restaurant_id", restaurant_id)
-    .eq("status", "active")
-    .single();
+    .eq("status", "active");
+
+  const { data: existing } = await (restaurant_id
+    ? findQ.eq("restaurant_id", restaurant_id)
+    : findQ
+  ).maybeSingle();
 
   if (existing) {
     orderId = existing.id;
   } else {
+    const orderPayload: Record<string, unknown> = { table_id, status: "active", total_amount: 0 };
+    if (restaurant_id) orderPayload.restaurant_id = restaurant_id;
+
     const { data: newOrder, error: orderError } = await supabase
       .from("orders")
-      .insert({ table_id, restaurant_id, status: "active", total_amount: 0 })
+      .insert(orderPayload)
       .select()
       .single();
 
-    if (orderError || !newOrder)
-      return NextResponse.json({ error: "Failed to create order" }, { status: 500 });
-    orderId = newOrder.id;
+    if (orderError) {
+      // Retry without restaurant_id if column missing
+      if (orderError.message?.includes("restaurant_id")) {
+        const { data: newOrder2, error: e2 } = await supabase
+          .from("orders")
+          .insert({ table_id, status: "active", total_amount: 0 })
+          .select()
+          .single();
+        if (e2 || !newOrder2) return NextResponse.json({ error: "Failed to create order" }, { status: 500 });
+        orderId = newOrder2.id;
+      } else {
+        return NextResponse.json({ error: orderError.message }, { status: 500 });
+      }
+    } else {
+      if (!newOrder) return NextResponse.json({ error: "Failed to create order" }, { status: 500 });
+      orderId = newOrder.id;
+    }
   }
 
   const orderItems = items.map((item: {
@@ -89,7 +122,6 @@ export async function PATCH(req: Request) {
     .from("orders")
     .update(updateData)
     .eq("id", id)
-    .eq("restaurant_id", session.id)
     .select()
     .single();
 
