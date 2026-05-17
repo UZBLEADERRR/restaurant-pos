@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import Image from "next/image";
 
@@ -62,35 +62,34 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
   const [dark, setDark] = useState(false);
   const [tab, setTab] = useState<Tab>("menu");
 
-  // Data
   const [table, setTable] = useState<TableInfo | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [loadRetry, setLoadRetry] = useState(0);
   const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [selectedCat, setSelectedCat] = useState("all");
-  const [dataLoaded, setDataLoaded] = useState(false);
 
   // Cart
   const [cart, setCart] = useState<CartItem[]>([]);
   const [showCart, setShowCart] = useState(false);
   const [ordering, setOrdering] = useState(false);
 
-  // Order status
+  // Active order
   const [orderId, setOrderId] = useState<string | null>(null);
   const [orderItems, setOrderItems] = useState<OrderItemDetail[]>([]);
   const [orderTotal, setOrderTotal] = useState(0);
   const [justPaid, setJustPaid] = useState(false);
 
+  // Guest count modal state — separate from orderId to avoid flicker
+  // null = not yet checked, true = show, false = confirmed or has order
+  const [guestModalState, setGuestModalState] = useState<"pending" | "show" | "hidden">("pending");
+  const [guestCount, setGuestCount] = useState(2);
+
   // Call staff
   const [callMsg, setCallMsg] = useState("");
   const [callSent, setCallSent] = useState(false);
-
-  // Guest count — shown when table has no active order
-  const [showGuestModal, setShowGuestModal] = useState(false);
-  const [guestCount, setGuestCount] = useState(2);
-
   const [toast, setToast] = useState<string | null>(null);
+
   const tr = T[lang];
 
   // Dark mode
@@ -115,46 +114,69 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
     setTimeout(() => setToast(null), 2500);
   };
 
-  // Load active order for this table
-  const loadOrder = useCallback(async (tableId: string, showGuestIfEmpty = false) => {
+  // Load active order — gracefully handles missing guest_count column
+  const loadOrder = useCallback(async (tableId: string, isFirst: boolean) => {
     try {
-      const { data } = await supabase
+      // Try with guest_count first, fall back if column doesn't exist
+      type OrderRow = { id: string; total_amount: number; guest_count?: number; order_items: OrderItemDetail[] };
+      let data: OrderRow | null = null;
+
+      const res1 = await supabase
         .from("orders")
         .select("id, total_amount, guest_count, order_items(*)")
         .eq("table_id", tableId)
         .eq("status", "active")
         .maybeSingle();
 
+      if (res1.error && res1.error.message?.toLowerCase().includes("guest_count")) {
+        // Column doesn't exist yet — retry without it
+        const res2 = await supabase
+          .from("orders")
+          .select("id, total_amount, order_items(*)")
+          .eq("table_id", tableId)
+          .eq("status", "active")
+          .maybeSingle();
+        data = res2.data as OrderRow | null;
+      } else {
+        data = res1.data as OrderRow | null;
+      }
+
       if (data) {
-        const prevOrderId = orderId;
+        // Active order found
         setOrderId(data.id);
         setOrderItems((data.order_items as OrderItemDetail[]) || []);
         setOrderTotal(data.total_amount || 0);
         if (data.guest_count) setGuestCount(data.guest_count);
         setJustPaid(false);
+        // Hide guest modal — table already has an order
+        if (isFirst) setGuestModalState("hidden");
       } else {
-        // Order gone (paid or never existed)
+        // No active order
         setOrderId(prev => {
-          if (prev) {
-            // Was previously active → now paid → celebrate
+          if (prev !== null) {
+            // Had an order → now it's gone (paid)
             setJustPaid(true);
             setTab("order");
-            setTimeout(() => setJustPaid(false), 5000);
+            setTimeout(() => setJustPaid(false), 6000);
           }
           return null;
         });
         setOrderItems([]);
         setOrderTotal(0);
-        // Show guest count modal when table is empty
-        if (showGuestIfEmpty) setShowGuestModal(true);
+        // On first load with no order → show guest count modal
+        if (isFirst) setGuestModalState("show");
       }
-    } catch {}
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    } catch {
+      // Network error — don't change modal state
+      if (isFirst) setGuestModalState("hidden");
+    }
   }, []);
 
   // Main data load
   useEffect(() => {
     let mounted = true;
+    setGuestModalState("pending");
+
     const load = async () => {
       setPageError(null);
       try {
@@ -196,16 +218,16 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
           const m2 = await supabase.from("menu_items").select("*").eq("is_available", true).order("sort_order");
           if (!m2.error && m2.data) items = m2.data;
         }
-        if (mounted) {
-          setMenuItems(items);
-          setDataLoaded(true);
-        }
+        if (mounted) setMenuItems(items);
 
-        // Load order — show guest modal if empty (every time they visit/reload with no order)
+        // Load order — this determines if we show guest modal
         await loadOrder(tableData.id, true);
 
       } catch (err) {
-        if (mounted) setPageError(err instanceof Error ? err.message : "load_error");
+        if (mounted) {
+          setPageError(err instanceof Error ? err.message : "load_error");
+          setGuestModalState("hidden");
+        }
       }
     };
     load();
@@ -213,15 +235,14 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restaurantId, tableNumber, loadRetry]);
 
-  // Real-time order updates
+  // Real-time + polling
   useEffect(() => {
     if (!table) return;
     const channel = supabase
-      .channel(`table-${table.id}`)
+      .channel(`table-${table.id}-${Date.now()}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => loadOrder(table.id, false))
       .on("postgres_changes", { event: "*", schema: "public", table: "order_items" }, () => loadOrder(table.id, false))
       .subscribe();
-    // Also poll every 8 seconds as fallback
     const iv = setInterval(() => loadOrder(table.id, false), 8000);
     return () => {
       supabase.removeChannel(channel);
@@ -252,10 +273,7 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
       const res = await fetch("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          table_id: table.id, items: cart, restaurant_id: restaurantId,
-          guest_count: guestCount,
-        }),
+        body: JSON.stringify({ table_id: table.id, items: cart, restaurant_id: restaurantId, guest_count: guestCount }),
       });
       const data = await res.json();
       if (data.order_id || data.success) {
@@ -279,14 +297,11 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
     setTimeout(() => setCallSent(false), 3000);
   };
 
-  const confirmGuest = () => {
-    setShowGuestModal(false);
-  };
-
   const pendingCount = orderItems.filter(i => !i.is_completed).length;
   const doneCount = orderItems.filter(i => i.is_completed).length;
+  const showGuestModal = guestModalState === "show";
 
-  // ── Error / Not Found ──
+  // ── Error states ──
   if (pageError === "notfound") {
     return (
       <div className="min-h-screen bg-kakao-yellow flex flex-col items-center justify-center gap-3 p-8">
@@ -311,27 +326,37 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
   }
 
   return (
-    <div className={`h-screen flex flex-col overflow-hidden font-sans ${dark ? "bg-gray-950 text-white" : "bg-gray-50 text-gray-900"}`}>
+    // 100dvh accounts for mobile browser bars (Safari, Chrome)
+    <div
+      className={`flex flex-col overflow-hidden font-sans ${dark ? "bg-gray-950 text-white" : "bg-gray-50 text-gray-900"}`}
+      style={{ height: "100dvh" }}
+    >
 
       {/* ── GUEST COUNT MODAL ── */}
-      {showGuestModal && dataLoaded && (
+      {showGuestModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
           <div className={`w-full max-w-xs rounded-3xl p-6 shadow-2xl ${dark ? "bg-gray-900" : "bg-white"}`}>
             <div className="text-center mb-6">
               <span className="text-5xl">👥</span>
               <h2 className="text-xl font-black mt-3 mb-1">{tr.guestTitle}</h2>
-              <p className="text-sm text-gray-400">{table?.name}</p>
+              <p className="text-sm text-gray-400">{table?.name || `Table ${tableNumber}`}</p>
             </div>
             <div className="flex items-center justify-center gap-5 mb-4">
-              <button onClick={() => setGuestCount(g => Math.max(1, g - 1))}
-                className={`w-14 h-14 rounded-full text-3xl font-bold flex items-center justify-center transition-colors ${dark ? "bg-gray-800 active:bg-gray-700" : "bg-gray-100 active:bg-gray-200"}`}>−</button>
+              <button
+                onClick={() => setGuestCount(g => Math.max(1, g - 1))}
+                className={`w-14 h-14 rounded-full text-3xl font-bold flex items-center justify-center ${dark ? "bg-gray-800" : "bg-gray-100"}`}
+              >−</button>
               <span className="text-6xl font-black text-kakao-yellow w-20 text-center">{guestCount}</span>
-              <button onClick={() => setGuestCount(g => Math.min(20, g + 1))}
-                className={`w-14 h-14 rounded-full text-3xl font-bold flex items-center justify-center transition-colors ${dark ? "bg-gray-800 active:bg-gray-700" : "bg-gray-100 active:bg-gray-200"}`}>+</button>
+              <button
+                onClick={() => setGuestCount(g => Math.min(20, g + 1))}
+                className={`w-14 h-14 rounded-full text-3xl font-bold flex items-center justify-center ${dark ? "bg-gray-800" : "bg-gray-100"}`}
+              >+</button>
             </div>
             <p className="text-center text-sm text-gray-400 mb-5">{guestCount} {tr.guestPerson}</p>
-            <button onClick={confirmGuest}
-              className="w-full bg-kakao-yellow text-kakao-brown font-black py-4 rounded-2xl text-lg active:scale-95 transition-transform">
+            <button
+              onClick={() => setGuestModalState("hidden")}
+              className="w-full bg-kakao-yellow text-kakao-brown font-black py-4 rounded-2xl text-lg active:scale-95 transition-transform"
+            >
               {tr.guestBtn} →
             </button>
           </div>
@@ -340,21 +365,20 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
 
       {/* ── HEADER ── */}
       <div className="bg-kakao-yellow flex-shrink-0">
-        <div className="max-w-lg mx-auto px-4 pt-4 pb-3 flex items-center justify-between">
+        <div className="max-w-lg mx-auto px-4 pt-3 pb-2.5 flex items-center justify-between">
           <div>
             <h1 className="font-black text-kakao-brown text-lg leading-tight">
-              {table ? (lang === "ko" ? table.name : `Table ${table.number}`) : "..."}
+              {table ? table.name : `Table ${tableNumber}`}
             </h1>
             <div className="flex items-center gap-2 mt-0.5">
-              {guestCount > 0 && !showGuestModal && (
-                <button onClick={() => setShowGuestModal(true)} className="text-xs text-kakao-brown/70 hover:text-kakao-brown transition-colors">
-                  👥 {guestCount}{lang === "ko" ? "명" : " guests"} ✏️
-                </button>
-              )}
-              {orderItems.length > 0 && !showGuestModal && (
-                <span className="text-xs text-kakao-brown/70">
-                  {pendingCount > 0 ? `⏳ ${pendingCount}개 준비중` : "✅ 모두 준비됨"}
-                </span>
+              <button
+                onClick={() => setGuestModalState("show")}
+                className="text-xs text-kakao-brown/70 hover:text-kakao-brown"
+              >
+                👥 {guestCount}{lang === "ko" ? "명" : " guests"} ✏️
+              </button>
+              {pendingCount > 0 && (
+                <span className="text-xs text-kakao-brown/70">· ⏳ {pendingCount}개 준비중</span>
               )}
             </div>
           </div>
@@ -375,7 +399,7 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
         </div>
       </div>
 
-      {/* ── CATEGORY TABS (menu only) ── */}
+      {/* ── CATEGORY TABS ── */}
       {tab === "menu" && (
         <div className={`flex-shrink-0 border-b ${dark ? "bg-gray-900 border-gray-800" : "bg-white border-gray-100"}`}>
           <div className="flex overflow-x-auto scrollbar-hide px-4 py-2 gap-2 max-w-lg mx-auto">
@@ -423,24 +447,25 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
                         {lang === "ko" ? item.name_ko : item.name_en}
                       </p>
                       {(item.description_ko || item.description_en) && (
-                        <p className={`text-xs mt-0.5 line-clamp-1 ${dark ? "text-gray-400" : "text-gray-400"}`}>
+                        <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">
                           {lang === "ko" ? item.description_ko : item.description_en}
                         </p>
                       )}
                       <div className="flex items-center justify-between mt-2.5">
                         <span className="font-black text-kakao-brown">{tr.won}{item.price.toLocaleString()}</span>
-                        {soldOut ? <span className="text-xs text-gray-400">{tr.soldOut}</span>
-                          : inCart ? (
-                            <div className="flex items-center gap-2">
-                              <button onClick={() => changeQty(item.id, -1)} className={`w-7 h-7 rounded-full border-2 flex items-center justify-center font-bold ${dark ? "border-gray-600 text-gray-300" : "border-gray-200 text-gray-600"}`}>−</button>
-                              <span className="font-black text-base w-5 text-center">{inCart.quantity}</span>
-                              <button onClick={() => addToCart(item)} className="w-7 h-7 rounded-full bg-kakao-yellow flex items-center justify-center font-bold text-kakao-brown">+</button>
-                            </div>
-                          ) : (
-                            <button onClick={() => addToCart(item)} className="bg-kakao-yellow text-kakao-brown font-bold px-3 py-1.5 rounded-xl text-xs active:scale-95 transition-transform">
-                              {tr.add}
-                            </button>
-                          )}
+                        {soldOut ? (
+                          <span className="text-xs text-gray-400">{tr.soldOut}</span>
+                        ) : inCart ? (
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={() => changeQty(item.id, -1)} className={`w-7 h-7 rounded-full border-2 flex items-center justify-center font-bold ${dark ? "border-gray-600 text-gray-300" : "border-gray-200 text-gray-600"}`}>−</button>
+                            <span className="font-black text-base w-5 text-center">{inCart.quantity}</span>
+                            <button onClick={() => addToCart(item)} className="w-7 h-7 rounded-full bg-kakao-yellow flex items-center justify-center font-bold text-kakao-brown">+</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => addToCart(item)} className="bg-kakao-yellow text-kakao-brown font-bold px-3 py-1.5 rounded-xl text-xs active:scale-95 transition-transform">
+                            {tr.add}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -452,9 +477,7 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
           {/* TAB: CALL STAFF */}
           {tab === "call" && (
             <div className="p-4 pb-6">
-              <h2 className={`font-black text-xl mb-4 ${dark ? "text-white" : "text-gray-800"}`}>
-                🔔 {tr.call}
-              </h2>
+              <h2 className={`font-black text-xl mb-4 ${dark ? "text-white" : "text-gray-800"}`}>🔔 {tr.call}</h2>
               <div className="grid grid-cols-2 gap-2 mb-5">
                 {QUICK[lang].map(q => (
                   <button key={q} onClick={() => setCallMsg(q)}
@@ -480,19 +503,21 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
           {tab === "order" && (
             <div className="p-4 pb-6">
 
-              {/* Payment complete celebration */}
+              {/* Payment celebration */}
               {justPaid && (
                 <div className="mb-5 bg-green-50 dark:bg-green-950/40 border border-green-200 dark:border-green-900/50 rounded-3xl p-6 text-center">
                   <div className="text-5xl mb-3">🎉</div>
                   <p className="font-black text-xl text-green-700 dark:text-green-300">{tr.paidTitle}</p>
                   <p className="text-sm text-green-600 dark:text-green-400 mt-1">{tr.paidSub}</p>
+                  <button onClick={() => { setJustPaid(false); setTab("menu"); }}
+                    className="mt-4 bg-kakao-yellow text-kakao-brown font-bold px-5 py-2.5 rounded-xl text-sm">
+                    {tr.menu} →
+                  </button>
                 </div>
               )}
 
               {!justPaid && (
-                <h2 className={`font-black text-xl mb-4 ${dark ? "text-white" : "text-gray-800"}`}>
-                  📋 {tr.myOrder}
-                </h2>
+                <h2 className={`font-black text-xl mb-4 ${dark ? "text-white" : "text-gray-800"}`}>📋 {tr.myOrder}</h2>
               )}
 
               {/* Summary cards */}
@@ -507,13 +532,12 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
                     <p className="text-xs text-green-400 mt-1 font-medium">{tr.ready}</p>
                   </div>
                   <div className={`rounded-2xl p-3.5 text-center ${dark ? "bg-gray-800" : "bg-white shadow-sm"}`}>
-                    <p className="text-lg font-black text-kakao-brown leading-tight">{tr.won}{orderTotal.toLocaleString()}</p>
+                    <p className="text-base font-black text-kakao-brown leading-tight">{tr.won}{orderTotal.toLocaleString()}</p>
                     <p className={`text-xs mt-1 font-medium ${dark ? "text-gray-400" : "text-gray-500"}`}>{tr.total}</p>
                   </div>
                 </div>
               )}
 
-              {/* Item list */}
               {orderItems.length === 0 && !justPaid ? (
                 <div className="py-16 text-center text-gray-400 dark:text-gray-600">
                   <p className="text-4xl mb-3">🍽️</p>
@@ -561,13 +585,14 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
               <span className="bg-kakao-brown text-white text-xs rounded-full w-6 h-6 flex items-center justify-center font-bold">{cartCount}</span>
               {tr.cart}
             </span>
-            <span className="text-base">{tr.won}{cartTotal.toLocaleString()}</span>
+            <span>{tr.won}{cartTotal.toLocaleString()}</span>
           </button>
         </div>
       )}
 
-      {/* ── BOTTOM NAVBAR ── */}
-      <div className={`flex-shrink-0 border-t ${dark ? "bg-gray-900 border-gray-800" : "bg-white border-gray-200"}`}>
+      {/* ── BOTTOM NAVBAR — always visible ── */}
+      <div className={`flex-shrink-0 border-t ${dark ? "bg-gray-900 border-gray-800" : "bg-white border-gray-200"}`}
+        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
         <div className="max-w-lg mx-auto grid grid-cols-3">
           {([
             { key: "menu", icon: "🍽️", label: tr.menu },
@@ -581,11 +606,8 @@ export default function CustomerPage({ params }: { params: { restaurantId: strin
               )}
               <span className="text-2xl">{item.icon}</span>
               <span className={`text-xs font-semibold ${tab === item.key ? "text-kakao-brown" : ""}`}>{item.label}</span>
-              {item.key === "order" && pendingCount > 0 && !showGuestModal && (
+              {item.key === "order" && pendingCount > 0 && (
                 <span className="absolute top-2 right-6 w-4 h-4 bg-red-500 text-white text-[9px] rounded-full flex items-center justify-center font-bold">{pendingCount}</span>
-              )}
-              {item.key === "call" && (
-                <span className="absolute top-2 right-6 w-2 h-2 bg-orange-400 rounded-full" />
               )}
             </button>
           ))}
