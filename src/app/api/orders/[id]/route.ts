@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getAdminSession } from "@/lib/auth";
 
-// Toggle order item completion
 export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
@@ -12,8 +11,8 @@ export async function PATCH(
 
   const body = await req.json();
 
-  // If toggling an order item
-  if (body.item_id !== undefined) {
+  // Toggle order item completion
+  if (body.item_id !== undefined && body.is_completed !== undefined) {
     const { data, error } = await supabaseAdmin
       .from("order_items")
       .update({ is_completed: body.is_completed })
@@ -23,6 +22,36 @@ export async function PATCH(
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json(data);
+  }
+
+  // Remove an order item (and update total)
+  if (body.remove_item_id) {
+    // Get the item first to know its price/qty
+    const { data: item, error: fetchErr } = await supabaseAdmin
+      .from("order_items")
+      .select("price, quantity")
+      .eq("id", body.remove_item_id)
+      .single();
+
+    if (fetchErr || !item) return NextResponse.json({ error: "Item not found" }, { status: 404 });
+
+    const { error: delErr } = await supabaseAdmin
+      .from("order_items")
+      .delete()
+      .eq("id", body.remove_item_id);
+
+    if (delErr) return NextResponse.json({ error: delErr.message }, { status: 500 });
+
+    // Recalculate order total from remaining items
+    const { data: remaining } = await supabaseAdmin
+      .from("order_items")
+      .select("price, quantity")
+      .eq("order_id", params.id);
+
+    const newTotal = (remaining || []).reduce((s, i) => s + i.price * i.quantity, 0);
+    await supabaseAdmin.from("orders").update({ total_amount: newTotal }).eq("id", params.id);
+
+    return NextResponse.json({ success: true, total_amount: newTotal });
   }
 
   // Adding manual item to existing order
@@ -44,7 +73,6 @@ export async function PATCH(
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    // Update order total directly
     const { data: currentOrder } = await supabaseAdmin
       .from("orders")
       .select("total_amount")

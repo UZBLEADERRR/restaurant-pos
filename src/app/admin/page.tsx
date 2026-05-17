@@ -91,6 +91,16 @@ export default function AdminDashboard() {
     fetchAll(restaurantId);
   };
 
+  const removeItem = async (orderId: string, itemId: string) => {
+    if (!confirm("이 항목을 삭제하시겠습니까?")) return;
+    await fetch(`/api/orders/${orderId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remove_item_id: itemId }),
+    });
+    fetchAll(restaurantId);
+  };
+
   const markPaid = async (orderId: string) => {
     if (!confirm("결제 완료 처리하시겠습니까?")) return;
     await fetch("/api/orders", {
@@ -434,6 +444,11 @@ export default function AdminDashboard() {
                                   <span className="text-xs text-gray-400">(개당 ₩{item.price.toLocaleString()})</span>
                                 </div>
                               </div>
+                              <button
+                                onClick={() => removeItem(selected.activeOrder!.id, item.id)}
+                                className="flex-shrink-0 w-7 h-7 rounded-xl bg-gray-100 dark:bg-gray-800 text-gray-400 hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/40 dark:hover:text-red-400 flex items-center justify-center text-sm transition-colors"
+                                title="삭제"
+                              >🗑</button>
                             </div>
                           ))}
                       </div>
@@ -462,6 +477,11 @@ export default function AdminDashboard() {
                                   <span className="text-xs text-gray-400">(개당 ₩{item.price.toLocaleString()})</span>
                                 </div>
                               </div>
+                              <button
+                                onClick={() => removeItem(selected.activeOrder!.id, item.id)}
+                                className="flex-shrink-0 w-7 h-7 rounded-xl bg-gray-100 dark:bg-gray-800 text-gray-400 hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/40 dark:hover:text-red-400 flex items-center justify-center text-sm transition-colors"
+                                title="삭제"
+                              >🗑</button>
                             </div>
                           ))}
                       </div>
